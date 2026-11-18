@@ -113,4 +113,207 @@
 
   /* Ayarlar Paneli */
   #modal {
-    position: fixed; inset: 0; background: rgba(0, 0, 0, 0
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.92);
+    display: none; align-items: center; justify-content: center; z-index: 20;
+  }
+  #modal.open { display: flex; }
+  .card {
+    width: min(90vw, 380px); padding: 20px; border-radius: 14px;
+    background: #0b1116; border: 1px solid rgba(0, 243, 255, 0.35);
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .card h3 { margin: 0; font-size: 16px; color: #00f3ff; }
+  .card input {
+    width: 100%; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid rgba(0, 243, 255, 0.3);
+    background: #000; color: #fff; font-size: 14px;
+  }
+  .row { display: flex; gap: 10px; justify-content: flex-end; }
+  .btn {
+    padding: 9px 16px; border-radius: 8px; border: none;
+    font-size: 14px; cursor: pointer; font-weight: 600;
+  }
+  .btn-save { background: #00f3ff; color: #000; }
+  .btn-cancel { background: #1c262e; color: #aaa; }
+</style>
+</head>
+<body class="idle">
+
+<div id="face">
+  <svg id="eyes" viewBox="0 0 420 180">
+    <g id="eyeGroup">
+      <rect class="eye" id="leftEye" x="45" y="25" width="130" height="130" rx="34" ry="34"/>
+      <rect class="eye" id="rightEye" x="245" y="25" width="130" height="130" rx="34" ry="34"/>
+    </g>
+  </svg>
+</div>
+
+<div id="wave"></div>
+<div id="subtitle">Konuşmak için ekrana dokunun</div>
+<button id="settingsBtn" title="Ayarlar">⚙</button>
+
+<div id="modal">
+  <div class="card">
+    <h3>Gemini API Ayarı</h3>
+    <input type="password" id="apiKeyInput" placeholder="Gemini API Anahtarınızı yapıştırın">
+    <div class="row">
+      <button class="btn btn-cancel" id="closeModal">Kapat</button>
+      <button class="btn btn-save" id="saveKey">Kaydet</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const body = document.body;
+  const eyeGroup = document.getElementById("eyeGroup");
+  const subtitle = document.getElementById("subtitle");
+  const modal = document.getElementById("modal");
+  const apiKeyInput = document.getElementById("apiKeyInput");
+
+  let state = "idle";
+  let sleepTimer = null;
+  let recognition = null;
+
+  function setState(newState, text = "") {
+    state = newState;
+    body.className = newState;
+    if (text) subtitle.textContent = text;
+    resetSleepTimer();
+  }
+
+  function resetSleepTimer() {
+    clearTimeout(sleepTimer);
+    if (state === "idle") {
+      sleepTimer = setTimeout(() => {
+        if (state === "idle") {
+          eyeGroup.style.transform = "translate(0px, 0px)";
+          setState("sleep", "");
+        }
+      }, 45000);
+    }
+  }
+
+  // Doğal göz kırpma
+  setInterval(() => {
+    if (state === "idle" && Math.random() < 0.7) {
+      body.classList.add("blink");
+      setTimeout(() => body.classList.remove("blink"), 160);
+    }
+  }, 3400);
+
+  // Boştayken etrafa bakınma
+  setInterval(() => {
+    if (state === "idle") {
+      const dx = Math.floor((Math.random() - 0.5) * 44);
+      const dy = Math.floor((Math.random() - 0.5) * 24);
+      eyeGroup.style.transition = "transform 0.5s ease";
+      eyeGroup.style.transform = `translate(${dx}px, ${dy}px)`;
+    } else {
+      eyeGroup.style.transform = "translate(0px, 0px)";
+    }
+  }, 4200);
+
+  // Sesli Yanıt (TTS)
+  function speak(text) {
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = "tr-TR";
+    utter.rate = 1.05;
+    utter.onstart = () => setState("speaking", text);
+    utter.onend = () => setState("idle", "");
+    utter.onerror = () => setState("idle", "");
+    window.speechSynthesis.speak(utter);
+  }
+
+  // Gemini API İsteği
+  async function askGemini(promptText) {
+    const apiKey = localStorage.getItem("gemini_api_key");
+    if (!apiKey) {
+      setState("idle", "Önce sağ üstten API anahtarını girin.");
+      modal.classList.add("open");
+      return;
+    }
+
+    setState("thinking", "Düşünüyor...");
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: "Sen masaüstü bir sesli asistansın. Yanıtların çok kısa, doğal, samimi ve sesli okunmaya uygun Türkçe cümleler olsun. Markdown veya yıldız işareti kullanma." }]
+          },
+          contents: [{ parts: [{ text: promptText }] }]
+        })
+      });
+      const data = await res.json();
+      const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (reply) {
+        speak(reply.trim());
+      } else {
+        setState("idle", "Hata: " + (data?.error?.message || "Bilinmeyen hata"));
+      }
+    } catch (err) {
+      setState("idle", "Bağlantı hatası: " + err.message);
+    }
+  }
+
+  // Mikrofon Dinleme (Web Speech API)
+  function startListening() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setState("idle", "Bu tarayıcı sesli komut desteklemiyor.");
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    recognition = new SpeechRecognition();
+    recognition.lang = "tr-TR";
+    recognition.interimResults = false;
+
+    recognition.onstart = () => setState("listening", "Dinliyorum...");
+    recognition.onresult = (e) => {
+      const transcript = e.results[0][0].transcript;
+      subtitle.textContent = transcript;
+      askGemini(transcript);
+    };
+    recognition.onerror = () => setState("idle", "Seni duyamadım, tekrar dokun.");
+    recognition.onend = () => {
+      if (state === "listening") setState("idle", "");
+    };
+    recognition.start();
+  }
+
+  // Ekrana Dokunma
+  document.getElementById("face").addEventListener("click", () => {
+    if (state === "listening" && recognition) {
+      recognition.stop();
+      setState("idle", "");
+      return;
+    }
+    if (state === "speaking") {
+      window.speechSynthesis.cancel();
+      setState("idle", "");
+      return;
+    }
+    startListening();
+  });
+
+  // Ayarlar Paneli
+  document.getElementById("settingsBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    apiKeyInput.value = localStorage.getItem("gemini_api_key") || "";
+    modal.classList.add("open");
+  });
+  document.getElementById("closeModal").addEventListener("click", () => modal.classList.remove("open"));
+  document.getElementById("saveKey").addEventListener("click", () => {
+    localStorage.setItem("gemini_api_key", apiKeyInput.value.trim());
+    modal.classList.remove("open");
+    setState("idle", "API anahtarı kaydedildi.");
+  });
+
+  resetSleepTimer();
+</script>
+</body>
+</html>
